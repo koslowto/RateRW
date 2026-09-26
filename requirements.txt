@@ -1,0 +1,4 @@
+rawpy
+pillow
+tk
+pyexiv2
