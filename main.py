@@ -3,23 +3,29 @@ import rawpy
 import pyexiv2
 import tkinter as tk
 from PIL import Image, ImageTk
-from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from itertools import islice
 
-image_format = "arw"
+IMAGE_FORMAT = "arw"
+CACHE_RANGE = 50
+PREVIEW_SIZE = 2000
+RATINGS = ["☆☆☆☆☆", "★☆☆☆☆", "★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]
 
 image_path = ""
-executor = ThreadPoolExecutor(max_workers=2)
-ratings = ["☆☆☆☆☆", "★☆☆☆☆", "★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]
+image_paths = []
 
-def load_image(image_path):
-    with rawpy.imread(image_path) as raw:
-        rgb = raw.postprocess()
+cache_executor = ThreadPoolExecutor(max_workers=1)
+preload_executor = ThreadPoolExecutor(max_workers=12)
 
-    return Image.fromarray(rgb)
+cache = []
+def load_preview (path):
+    global cache
 
-@lru_cache(maxsize=100)
-def load_preview(path, max_size=2000):
+    for item in cache:
+            if item["path"] == path:
+                return item["image"]
+
     with rawpy.imread(path) as raw:
         rgb = raw.postprocess(
             use_camera_wb=True,
@@ -27,26 +33,69 @@ def load_preview(path, max_size=2000):
         )
 
     image = Image.fromarray(rgb)
-    image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    image.thumbnail((PREVIEW_SIZE, PREVIEW_SIZE), Image.Resampling.LANCZOS)
 
-    return image
+    return image 
 
-def cache_album():
-    for image_path in image_paths[:75]:
-        executor.submit(load_preview, image_path)
+def preload_cache (paths):
+    global cache
 
-def set_rating(filename, rating):
+    futures = [preload_executor.submit(load_preview, path) for path in paths]
+
+    results = [
+        {"path": path, "image": future.result()}
+        for path, future in zip(paths, futures)
+    ]
+
+    cache = results
+
+    print("cached album")
+    for i, c in enumerate(cache):
+        print(str(i+1) + ": " + c["path"])
+
+def cache_album(path, paths):
+    global cache
+
+    idx = paths.index(path)
+
+    print(paths)
+    print(idx)
+
+    if idx < CACHE_RANGE:
+        cache = cache[1:] + [{
+            "path": paths[-1],
+            "image": load_preview(paths[-1])
+        }]
+
+    elif idx > CACHE_RANGE:
+        cache = [{
+            "path": paths[0],
+            "image": load_preview(paths[0])
+        }] + cache[:-1]
+
+    else:
+        cache = [
+            {"path": path, "image": load_preview(path)}
+            for path in paths
+        ]
+
+    print("cached album")
+    for i, c in enumerate(cache):
+        print(str(i+1) + ": " + c["path"])
+
+
+def set_rating (filename, rating):
     with pyexiv2.Image(filename) as image:
         image.modify_xmp({
             "Xmp.xmp.Rating": str(rating)
         })
 
-def get_rating(filename):
+def get_rating (filename):
     with pyexiv2.Image(filename) as image:
         return int(image.read_xmp()["Xmp.xmp.Rating"])
 
 
-def display_image():
+def display_image ():
     width = label.winfo_width()
     height = label.winfo_height()
     
@@ -67,66 +116,69 @@ def display_image():
     label.config(image=photo)
     label.image = photo
         
-    root.title(image_path + "  –  " + ratings[get_rating(image_path)])
+    root.title(image_path + "  –  " + RATINGS[get_rating(image_path)])
 
-def resize_image(event):
+def resize_image (event):
     display_image()
 
 def on_key(event):
     global image_path
     global image
+    global cache
 
     key = event.keysym
 
     if key in "012345":
         set_rating(image_path, key)
+        root.title(image_path + "  –  " + RATINGS[int(key)])
+        return
 
-        root.title(image_path + "  –  " + ratings[int(key)])
+    if key in ("Left", "Up"):
+        old_image_path = image_path
+
+        image_paths.rotate(1)
+        image_path = image_paths[CACHE_RANGE % len(image_paths)]
+
+    elif key in ("Right", "Down"):
+        old_image_path = image_path
+
+        image_paths.rotate(-1)
+        image_path = image_paths[CACHE_RANGE % len(image_paths)]
+
     else:
-        idx = image_paths.index(image_path)
+        return
 
-        if key in "LeftUp":
-            image_path = image_paths[
-                idx - 1 if idx > 0 
-                else max(0, len(image_paths) - 1)
-            ]
-            next_path = image_paths[
-                idx - 2 if idx > 1
-                else max(0, len(image_paths) - 2 + idx)
-            ] 
+    paths = list(islice(image_paths, 0, 2 * CACHE_RANGE + 1))
+    cache_executor.submit( cache_album, old_image_path, paths)
 
-            executor.submit(load_preview, next_path)
-
-        elif key in "RightDown":
-            image_path = image_paths[
-                (idx + 1) % len(image_paths)
-            ] 
-            next_path = image_paths[
-                (idx + 2) % len(image_paths)
-            ]
-
-            executor.submit(load_preview, next_path)
-
-        image = load_preview(image_path)
-        display_image()
+    image = load_preview(image_path)
+    display_image()
 
 
 
-image_paths = [
+
+image_paths = deque(sorted([
     x for x in os.listdir(".")
-    if x.lower().endswith("." + image_format)
-]
+    if x.lower().endswith("." + IMAGE_FORMAT)
+]))
 
-image_paths.sort()
-image_path = image_paths[0]
+CACHE_RANGE = min(CACHE_RANGE, int(len(image_paths) / 2))
 
+image_paths.rotate(CACHE_RANGE)
+image_path = image_paths[CACHE_RANGE % len(image_paths)]
+
+
+paths = list(islice(
+    image_paths,
+    0,
+    2 * CACHE_RANGE + 1
+))
+
+cache_executor.submit(preload_cache, paths)
 image = load_preview(image_path)
 
-executor.submit(load_preview, image_paths[max(0, len(image_paths) - 1)])
-executor.submit(cache_album)
-
 root = tk.Tk()
-root.title(image_path + " – " + ratings[get_rating(image_path)])
+root.title(image_path + " – " + RATINGS[get_rating(image_path)])
 root.geometry("1920x1080")
 
 label = tk.Label(root)
