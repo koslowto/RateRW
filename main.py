@@ -87,7 +87,10 @@ def set_rating (filename, rating):
 
 def get_rating (filename):
     with pyexiv2.Image(filename) as image:
-        return int(image.read_xmp()["Xmp.xmp.Rating"])
+        try:
+            return int(image.read_xmp()["Xmp.xmp.Rating"])
+        except:
+            return 0
 
 
 def display_image ():
@@ -156,7 +159,7 @@ def on_key(event):
             file_path = filedialog.askopenfilename(
                 title="Select a file",
                 filetypes=[
-                    ("Text files", "*.arw"),
+                    ("Images", "*.arw"),
                     ("All files", "*.*")
                 ]
             )
