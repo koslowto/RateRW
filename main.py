@@ -2,13 +2,14 @@ import os
 import rawpy
 import pyexiv2
 import tkinter as tk
+from tkinter import filedialog
 from PIL import Image, ImageTk
 from concurrent.futures import ThreadPoolExecutor
-from collections import deque
-from itertools import islice
 
+cwd = os.getcwd()
 IMAGE_FORMAT = "arw"
-CACHE_RANGE = 50
+MAX_CACHE_RANGE = 25
+CACHE_RANGE = MAX_CACHE_RANGE
 PREVIEW_SIZE = 2000
 RATINGS = ["☆☆☆☆☆", "★☆☆☆☆", "★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]
 
@@ -58,9 +59,6 @@ def cache_album(path, paths):
 
     idx = paths.index(path)
 
-    print(paths)
-    print(idx)
-
     if idx < CACHE_RANGE:
         cache = cache[1:] + [{
             "path": paths[-1],
@@ -74,10 +72,7 @@ def cache_album(path, paths):
         }] + cache[:-1]
 
     else:
-        cache = [
-            {"path": path, "image": load_preview(path)}
-            for path in paths
-        ]
+        pass
 
     print("cached album")
     for i, c in enumerate(cache):
@@ -121,10 +116,21 @@ def display_image ():
 def resize_image (event):
     display_image()
 
+def rotate (arr, n):
+    if n > 0:
+        return arr[-n:] + arr[:-n]
+    elif n < 0:
+        return arr[abs(n):] + arr[:abs(n)]
+
+    return arr
+
 def on_key(event):
+    global CACHE_RANGE
+    global image_paths
     global image_path
     global image
     global cache
+    global cwd
 
     key = event.keysym
 
@@ -133,23 +139,59 @@ def on_key(event):
         root.title(image_path + "  –  " + RATINGS[int(key)])
         return
 
-    if key in ("Left", "Up"):
+    elif key in ("Left", "Up"):
         old_image_path = image_path
 
-        image_paths.rotate(1)
+        image_paths = rotate(image_paths, 1)
         image_path = image_paths[CACHE_RANGE % len(image_paths)]
 
     elif key in ("Right", "Down"):
         old_image_path = image_path
 
-        image_paths.rotate(-1)
+        image_paths = rotate(image_paths, -1)
         image_path = image_paths[CACHE_RANGE % len(image_paths)]
+
+    elif key in "oOrR":
+        if key in "oO":
+            file_path = filedialog.askopenfilename(
+                title="Select a file",
+                filetypes=[
+                    ("Text files", "*.arw"),
+                    ("All files", "*.*")
+                ]
+            )
+        elif key in "rR":
+            cwd = ""
+            file_path = image_path
+
+        if file_path:
+            if cwd != "/".join(file_path.split("/")[:-1]):
+                cwd = "/".join(file_path.split("/")[:-1])
+
+                image_paths = sorted([
+                    cwd + "/" + x for x in os.listdir(cwd)
+                    if x.lower().endswith("." + IMAGE_FORMAT)
+                ])
+
+                CACHE_RANGE = min(MAX_CACHE_RANGE, int(len(image_paths) / 2))
+
+            difference = CACHE_RANGE - image_paths.index(file_path)
+            image_paths = rotate(image_paths, difference)
+
+            paths = image_paths[:2 * CACHE_RANGE + 1]
+            cache_executor.submit(preload_cache, paths)
+
+            image_path = image_paths[CACHE_RANGE % len(image_paths)]
+            old_image_path = image_path
+
+        else:
+            return
 
     else:
         return
 
-    paths = list(islice(image_paths, 0, 2 * CACHE_RANGE + 1))
-    cache_executor.submit( cache_album, old_image_path, paths)
+    paths = image_paths[:2 * CACHE_RANGE + 1]
+    cache_executor.submit(cache_album, old_image_path, paths)
 
     image = load_preview(image_path)
     display_image()
@@ -157,25 +199,40 @@ def on_key(event):
 
 
 
-image_paths = deque(sorted([
-    x for x in os.listdir(".")
-    if x.lower().endswith("." + IMAGE_FORMAT)
-]))
+cwd = ""
+image_paths = []
+if len(image_paths) == 0:
+    file_path = filedialog.askopenfilename(
+        title="Select a file",
+        filetypes=[
+            ("Text files", "*.arw"),
+            ("All files", "*.*")
+        ]
+    )
+    if file_path:
+        if cwd != "/".join(file_path.split("/")[:-1]):
+            cwd = "/".join(file_path.split("/")[:-1])
 
-CACHE_RANGE = min(CACHE_RANGE, int(len(image_paths) / 2))
+            image_paths = sorted([
+                cwd + "/" + x for x in os.listdir(cwd)
+                if x.lower().endswith("." + IMAGE_FORMAT)
+            ])
 
-image_paths.rotate(CACHE_RANGE)
-image_path = image_paths[CACHE_RANGE % len(image_paths)]
+            CACHE_RANGE = min(MAX_CACHE_RANGE, int(len(image_paths) / 2))
 
+        difference = CACHE_RANGE - image_paths.index(file_path)
+        image_paths = rotate(image_paths, difference)
 
-paths = list(islice(
-    image_paths,
-    0,
-    2 * CACHE_RANGE + 1
-))
+        paths = image_paths[:2 * CACHE_RANGE + 1]
+        cache_executor.submit(preload_cache, paths)
 
-cache_executor.submit(preload_cache, paths)
-image = load_preview(image_path)
+        image_path = image_paths[CACHE_RANGE % len(image_paths)]
+        old_image_path = image_path
+
+        image = load_preview(image_path)
+
+    else:
+        exit(0)
 
 root = tk.Tk()
 root.title(image_path + " – " + RATINGS[get_rating(image_path)])
